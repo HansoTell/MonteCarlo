@@ -1,5 +1,6 @@
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <cassert>
 #include <cmath>
@@ -134,24 +135,46 @@ auto Sweep( SimulationState& State, double KompositionEnergy, std::shared_ptr<IP
     return KompositionEnergy;
 }
 
-auto CheckKonvergence( std::span<const double> Sweeps, double LastChunkAverage, const uint64_t Chunk, const double MaxError, uint16_t& KonvergenceCounter ) -> double
-{
-    uint64_t Offset = Sweeps.size()/Chunk;
-    if( Offset == 1 )
-        return AveragePotentialEnergys(Sweeps);
 
-    std::span<const double> ChunkPart = Sweeps.subspan((Offset-1) * Chunk);
-    double ChunkAverage = AveragePotentialEnergys(ChunkPart);
+class ConvergenceMonitor
+{
+public:
+    ConvergenceMonitor( uint64_t Chunk, uint16_t CancelationLimit, double MaxError) : m_ChunkSize(Chunk), m_CancelationLimit(CancelationLimit), m_MaxError(MaxError)
+    {
+        m_SweepEnergys.reserve(20 * m_ChunkSize);
+    }
+public:
+    void AddSample(double Energy)
+    {
+        m_SweepEnergys.push_back(Energy);
+
+        if(m_SweepEnergys.size()%m_ChunkSize == 0)
+            EvaluateChunk();
+    }
+
+    [[nodiscard]] auto Converged() const -> bool { return m_CancelationLimit <= m_KonvergenceCounter; }
+private:
+    void EvaluateChunk()
+    {
+        const double Average = AveragePotentialEnergys(std::span<const double>(m_SweepEnergys).last(m_ChunkSize));
 
     //TODO: Max Error ist nicht richtig Braucht iwie einen Faktor oder so, außerdem nicht wenn einmal das zufällig klein ist sondern ofr hintereinander
-    if(std::abs(ChunkAverage - LastChunkAverage) < MaxError)
-        KonvergenceCounter++;
-    else
-        KonvergenceCounter = 0;
+        if(m_LastAvrage.has_value())
+            m_KonvergenceCounter = (std::abs(Average - *m_LastAvrage) < m_MaxError) ? m_KonvergenceCounter++ : 0;
 
-    return ChunkAverage;
-}
+        m_LastAvrage = Average;
+    }
 
+
+private:
+    std::vector<double> m_SweepEnergys;
+    std::optional<double> m_LastAvrage;
+    uint16_t m_KonvergenceCounter = 0;
+
+    const uint64_t m_ChunkSize;
+    const uint16_t m_CancelationLimit;
+    const double m_MaxError;
+};
 
 void Equilibriung( SimulationState& StartingSimulationState, std::shared_ptr<IPotential> Potential, RandomNumbers& random, double MaxError ) 
 {
@@ -159,28 +182,19 @@ void Equilibriung( SimulationState& StartingSimulationState, std::shared_ptr<IPo
     constexpr uint64_t Chunk = 1000;
     constexpr uint16_t CancelationLimit = 5;
 
-    uint16_t KonvergenceCounter = 0;
-
-    double ChunkAverage=0.0; 
-
-    std::vector<double> SweepEnergys;
-    SweepEnergys.reserve(20 * Chunk);
+    ConvergenceMonitor Monitor(Chunk, CancelationLimit, MaxError);
 
     double PrevEnergy = Potential->getPotentialEnergy(StartingSimulationState);
-    SweepEnergys.push_back(PrevEnergy);
+    Monitor.AddSample(PrevEnergy);
 
-    while (KonvergenceCounter < CancelationLimit) 
+    while (!Monitor.Converged()) 
     {
-        double NewEnergy = Sweep(StartingSimulationState, PrevEnergy, Potential, random);
+        const double NewEnergy = Sweep(StartingSimulationState, PrevEnergy, Potential, random);
 
         if(PrevEnergy == NewEnergy)
             continue;
 
-        SweepEnergys.push_back(NewEnergy);
-
-        if( SweepEnergys.size()%Chunk == 0 )
-            ChunkAverage = CheckKonvergence(SweepEnergys, ChunkAverage, Chunk, MaxError, KonvergenceCounter);
-
+        Monitor.AddSample(NewEnergy);
         PrevEnergy = NewEnergy;
     }
 }
@@ -209,9 +223,6 @@ auto Simulate( Volume volume, double Temperatur, size_t NumEntitys, size_t seed,
 
     Equilibriung(State1, Potential, random, MaxError);
     Equilibriung(State2, Potential, random, MaxError);
-
-    double KompositionEnergy1 = Potential->getPotentialEnergy(State1);
-    double KompositionEnergy2 = Potential->getPotentialEnergy(State2);
 
     //Was für eine Energy nehmen wir für den Vergleich der beiden? Energy des Letzen Chunks?
     //Checken dass Die States gut sind... Also in einem Error Bereich gleich sind
