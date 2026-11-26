@@ -134,52 +134,54 @@ auto Sweep( SimulationState& State, double KompositionEnergy, std::shared_ptr<IP
     return KompositionEnergy;
 }
 
+auto CheckKonvergence( std::span<const double> Sweeps, double LastChunkAverage, const uint64_t Chunk, const double MaxError, uint16_t& KonvergenceCounter ) -> double
+{
+    uint64_t Offset = Sweeps.size()/Chunk;
+    if( Offset == 1 )
+        return AveragePotentialEnergys(Sweeps);
+
+    std::span<const double> ChunkPart = Sweeps.subspan((Offset-1) * Chunk);
+    double ChunkAverage = AveragePotentialEnergys(ChunkPart);
+
+    //TODO: Max Error ist nicht richtig Braucht iwie einen Faktor oder so, außerdem nicht wenn einmal das zufällig klein ist sondern ofr hintereinander
+    if(std::abs(ChunkAverage - LastChunkAverage) < MaxError)
+        KonvergenceCounter++;
+    else
+        KonvergenceCounter = 0;
+
+    return ChunkAverage;
+}
+
 
 void Equilibriung( SimulationState& StartingSimulationState, std::shared_ptr<IPotential> Potential, RandomNumbers& random, double MaxError ) 
 {
     //Beides Heuristisch gewählt
-    constexpr int64_t Chunk = 1000;
+    constexpr uint64_t Chunk = 1000;
     constexpr uint16_t CancelationLimit = 5;
 
-    int64_t ChunkCounter = 1;
     uint16_t KonvergenceCounter = 0;
 
-    double LastChunkAverage; 
+    double ChunkAverage=0.0; 
 
     std::vector<double> SweepEnergys;
     SweepEnergys.reserve(20 * Chunk);
-    double OldEnergy = Potential->getPotentialEnergy(StartingSimulationState);
-    SweepEnergys.push_back(OldEnergy);
+
+    double PrevEnergy = Potential->getPotentialEnergy(StartingSimulationState);
+    SweepEnergys.push_back(PrevEnergy);
 
     while (KonvergenceCounter < CancelationLimit) 
     {
-        OldEnergy = Potential->getPotentialEnergy(StartingSimulationState);
-        double NewEnergy = Sweep(StartingSimulationState, OldEnergy, Potential, random);
+        double NewEnergy = Sweep(StartingSimulationState, PrevEnergy, Potential, random);
 
-        if(OldEnergy == NewEnergy)
+        if(PrevEnergy == NewEnergy)
             continue;
 
         SweepEnergys.push_back(NewEnergy);
 
-        if( ChunkCounter%Chunk == 0 )
-        {
-            int64_t Offset = ChunkCounter/Chunk;
-            if( Offset == 1 )
-                LastChunkAverage = AveragePotentialEnergys(SweepEnergys);
-            else
-            {
-                std::span<double> ChunkPart(SweepEnergys.begin() + (Offset-1) * Chunk, SweepEnergys.end());
-                double ChunkAverage = AveragePotentialEnergys(ChunkPart);
+        if( SweepEnergys.size()%Chunk == 0 )
+            ChunkAverage = CheckKonvergence(SweepEnergys, ChunkAverage, Chunk, MaxError, KonvergenceCounter);
 
-                //TODO: Max Error ist nicht richtig Braucht iwie einen Faktor oder so, außerdem nicht wenn einmal das zufällig klein ist sondern ofr hintereinander
-                if(std::abs(ChunkAverage - LastChunkAverage) < MaxError)
-                    KonvergenceCounter++;
-                else
-                    KonvergenceCounter = 0;;
-            }
-        }
-
-        ChunkCounter++;
+        PrevEnergy = NewEnergy;
     }
 }
 
@@ -208,32 +210,13 @@ auto Simulate( Volume volume, double Temperatur, size_t NumEntitys, size_t seed,
     Equilibriung(State1, Potential, random, MaxError);
     Equilibriung(State2, Potential, random, MaxError);
 
+    double KompositionEnergy1 = Potential->getPotentialEnergy(State1);
+    double KompositionEnergy2 = Potential->getPotentialEnergy(State2);
 
-
-
-    double KompositionEnergy = Potential->getPotentialEnergy(State1);
-
-
-    std::vector<double> ErgPotentialEnergy;
-    while(true)
-    {
-        auto randomEntity = static_cast<size_t>(random.EntityDistribution(random.generator));
-        Vec3D PositionPrev = State1.m_EntityPositions[randomEntity];
-
-        State1.m_EntityPositions[randomEntity] = generateNewPosition(random);
-        double EnergyNew = Potential->getPotentialEnergy(State1);
-
-        double EnergyDelta = EnergyNew - KompositionEnergy;
-
-        if( isChangeAccepted(State1, EnergyDelta, random) )
-        {
-            KompositionEnergy = EnergyNew;
-        }else {
-            State1.m_EntityPositions[randomEntity] = PositionPrev;
-        }
-    }
-
-    return AveragePotentialEnergys(ErgPotentialEnergy);
+    //Was für eine Energy nehmen wir für den Vergleich der beiden? Energy des Letzen Chunks?
+    //Checken dass Die States gut sind... Also in einem Error Bereich gleich sind
+    
+    return 0.0;
 }
 
 int main( int argc, char* argv[] )
